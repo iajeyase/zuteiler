@@ -788,11 +788,11 @@
         <p class="section-title">${esc(t("drawn_label"))}</p>
       </div>
       ${room.target ? `<button class="btn btn-primary" type="button" data-action="pick"><span>${esc(t("show_pick"))}</span>${ICON.arrow}</button>` : ""}
+      ${isHost ? `<button class="btn btn-ghost" type="button" data-action="reset" ${state.busy ? "disabled" : ""}>${ICON.shuffle}<span>${esc(t("btn_reset"))}</span></button>` : ""}
       <div>
         <p class="section-title people-title">${esc(t("people"))}<span class="legend"><i class="presence-chip on"></i>${esc(t("online"))} <i class="presence-chip off"></i>${esc(t("offline"))}</span></p>
         ${peopleStrip(room)}
       </div>
-      ${isHost ? `<button class="btn btn-ghost" type="button" data-action="reset" ${state.busy ? "disabled" : ""}>${esc(t("btn_reset"))}</button>` : ""}
       <button class="linkish" type="button" data-action="leave">${esc(t("btn_leave"))}</button>`;
   }
 

@@ -1721,3 +1721,10 @@ svg {
   from { opacity: 0; transform: translateY(20px) scale(0.92); }
   to   { opacity: 1; transform: none; }
 }
+
+/* icons inside buttons keep a sensible size */
+.btn svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}

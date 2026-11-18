@@ -97,8 +97,8 @@
       reveal_again: "Tap to hide",
       reveal_hint: "Keep it a secret. Nobody else can see who you picked.",
       not_in_draw: "You are not part of this draw.",
-      btn_reset: "Reset draw",
-      confirm_reset: "Reset the draw? Every pick is cleared and the host can draw again.",
+      btn_reset: "Respin",
+      confirm_reset: "Respin the ring? Everybody gets a new person, and the old picks are gone.",
       btn_leave: "Leave room on this device",
       confirm_leave: "Leave this room on this device? You can sign back in with your name and password.",
       toast_created: "Room {code} created",
@@ -182,8 +182,8 @@
       reveal_again: "Zum Verbergen tippen",
       reveal_hint: "Bleib diskret. Niemand sonst sieht, wen du gezogen hast.",
       not_in_draw: "Du bist nicht Teil dieser Ziehung.",
-      btn_reset: "Ziehung zurücksetzen",
-      confirm_reset: "Ziehung zurücksetzen? Alle Zuteilungen werden gelöscht und der Host kann neu ziehen.",
+      btn_reset: "Neu drehen",
+      confirm_reset: "Neu drehen? Alle bekommen eine neue Person, und die alten Zuteilungen sind weg.",
       btn_leave: "Raum auf diesem Gerät verlassen",
       confirm_leave: "Raum auf diesem Gerät verlassen? Mit Name und Passwort kannst du dich wieder anmelden.",
       toast_created: "Raum {code} erstellt",
@@ -817,7 +817,7 @@
     if (!window.confirm(t("confirm_reset"))) return;
     setBusy(true);
     try {
-      await api(`/rooms/${state.session.code}/reset`, { method: "POST" });
+      await api(`/rooms/${state.session.code}/respin`, { method: "POST" });
       state.revealed = false;
       toast(t("toast_reset"));
       await refresh();

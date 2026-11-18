@@ -224,18 +224,22 @@ async function joinRoom(request, env, code) {
   const token = randomHex(32);
   const salt = randomHex(16);
   const passHash = await derivePassword(body.password, salt);
+  let inserted;
   try {
-    await env.DB.prepare(
+    // Check-and-insert in one statement: if the draw has started meanwhile, nothing is inserted.
+    inserted = await env.DB.prepare(
       `INSERT INTO participants
          (room_code, name, name_key, pass_salt, pass_hash, token_hash, is_host, joined_at, last_seen, wishes)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
+       SELECT ?, ?, ?, ?, ?, ?, 0, ?, ?, ?
+        WHERE (SELECT status FROM rooms WHERE code = ?) = 'open'`
     )
-      .bind(code, name, name.toLowerCase(), salt, passHash, await sha256Hex(token), Date.now(), Date.now(), cleanWishes(body.wishes))
+      .bind(code, name, name.toLowerCase(), salt, passHash, await sha256Hex(token), Date.now(), Date.now(), cleanWishes(body.wishes), code)
       .run();
   } catch {
     // Lost a race with someone who took the same name a moment ago.
     return fail(409, "nameTaken");
   }
+  if (inserted.meta.changes === 0) return fail(409, "alreadyDrawn");
 
   return json({ code, token, name, isHost: false }, 201);
 }
@@ -300,38 +304,40 @@ async function getRoom(request, env, code) {
   });
 }
 
-async function drawRoom(request, env, code) {
+// Draw (or respin) the ring. The room is claimed first: from that moment on, joins are
+// refused, so the set of people is fixed before the ring is built.
+async function drawRoom(request, env, code, respin) {
   const me = await authenticate(request, env, code);
   if (!me) return fail(401, "unauthorized");
   if (!me.is_host) return fail(403, "hostOnly");
 
-  const room = await env.DB.prepare("SELECT status FROM rooms WHERE code = ?").bind(code).first();
-  if (!room) return fail(404, "roomNotFound");
-  if (room.status === "drawn") return fail(409, "alreadyDrawn");
-
-  const { results } = await env.DB.prepare(
-    "SELECT id FROM participants WHERE room_code = ?"
+  const claim = await env.DB.prepare(
+    "UPDATE rooms SET status = 'drawn', drawn_at = ? WHERE code = ? AND (status = 'open' OR ?)"
   )
+    .bind(Date.now(), code, respin ? 1 : 0)
+    .run();
+  if (claim.meta.changes === 0) {
+    const exists = await env.DB.prepare("SELECT 1 AS x FROM rooms WHERE code = ?").bind(code).first();
+    return exists ? fail(409, "alreadyDrawn") : fail(404, "roomNotFound");
+  }
+
+  const { results } = await env.DB.prepare("SELECT id FROM participants WHERE room_code = ?")
     .bind(code)
     .all();
-  if (results.length < MIN_PLAYERS) return fail(409, "notEnough");
+  if (results.length < MIN_PLAYERS) {
+    await env.DB.prepare("UPDATE rooms SET status = 'open', drawn_at = NULL WHERE code = ?").bind(code).run();
+    return fail(409, "notEnough");
+  }
 
-  // One big random ring: everybody gives to exactly one person and
-  // receives from exactly one person, and nobody gets themselves.
+  // One big random ring: everybody gives to exactly one person and receives from
+  // exactly one person, and nobody gets themselves. Every participant row is rewritten,
+  // so a respin can never leave someone with an old or doubled target.
   const order = shuffle(results.map((r) => r.id));
-  const statements = order.map((id, i) =>
-    env.DB.prepare("UPDATE participants SET target_id = ? WHERE id = ?").bind(
-      order[(i + 1) % order.length],
-      id
+  await env.DB.batch(
+    order.map((id, i) =>
+      env.DB.prepare("UPDATE participants SET target_id = ? WHERE id = ?").bind(order[(i + 1) % order.length], id)
     )
   );
-  statements.push(
-    env.DB.prepare("UPDATE rooms SET status = 'drawn', drawn_at = ? WHERE code = ?").bind(
-      Date.now(),
-      code
-    )
-  );
-  await env.DB.batch(statements);
   return json({ ok: true });
 }
 
@@ -376,7 +382,8 @@ async function route(request, url, env) {
   const action = parts[3];
   if (!action && method === "GET") return getRoom(request, env, code);
   if (action === "join" && method === "POST") return joinRoom(request, env, code);
-  if (action === "draw" && method === "POST") return drawRoom(request, env, code);
+  if (action === "draw" && method === "POST") return drawRoom(request, env, code, false);
+  if (action === "respin" && method === "POST") return drawRoom(request, env, code, true);
   if (action === "reset" && method === "POST") return resetRoom(request, env, code);
   if (action === "offline" && method === "POST") return offlineRoom(request, env, code);
 

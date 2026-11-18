@@ -15,7 +15,7 @@
 		{
 			"binding": "DB",
 			"database_name": "zuteiler",
-			"database_id": "REPLACE_WITH_D1_DATABASE_ID",
+			"database_id": "07eb5179-ca26-4510-98e7-be3f8788638d",
 			"migrations_dir": "migrations"
 		},
 		{

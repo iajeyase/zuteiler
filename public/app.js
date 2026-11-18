@@ -43,6 +43,7 @@
     lock: '<svg class="lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="11" width="15" height="10" rx="3"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
     copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15"/></svg>',
     eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+    close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
     shuffle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>',
   };
@@ -131,6 +132,9 @@
       your_wishes: "Your wishes",
       no_wishes: "Nothing added yet",
       gift_title: "Wishes of {name}",
+      show_pick: "Show my pick",
+      close_btn: "Close",
+      pick_kicker: "You give a gift to",
     },
     de: {
       hero_1: "Wer schenkt",
@@ -213,6 +217,9 @@
       your_wishes: "Deine Wünsche",
       no_wishes: "Noch nichts eingetragen",
       gift_title: "Wünsche von {name}",
+      show_pick: "Meine Zuteilung zeigen",
+      close_btn: "Schließen",
+      pick_kicker: "Du beschenkst",
     },
   };
 
@@ -245,6 +252,7 @@
     seen: new Set(),   // people already shown on the ring (no re-animation)
     busy: false,
     sideSig: "",
+    stageSig: "",      // what the ring was last built from
     pollId: null,
     refreshing: false,
     serverOffset: 0,   // client clock minus server clock, updated on every sync
@@ -526,6 +534,7 @@
         <div class="card side" id="side"></div>
       </section>`;
     state.sideSig = "";
+    state.stageSig = "";
   }
 
   function paintRoom() {
@@ -551,8 +560,23 @@
     const people = room.participants;
     const n = people.length;
     const drawn = room.status === "drawn";
-    const angleOf = (i) => (i * 360) / Math.max(n, 1);
 
+    // Rebuild the ring only when its structure changes. Normal polls just refresh the
+    // online dots, so taps are never lost and the wheel is never restarted.
+    const sig = JSON.stringify([
+      state.lang,
+      room.status,
+      room.drawnAt,
+      room.target,
+      people.map((p) => [p.name, p.isHost, p.isMe]),
+    ]);
+    if (sig === state.stageSig) {
+      patchPresence(people);
+      return;
+    }
+    state.stageSig = sig;
+
+    const angleOf = (i) => (i * 360) / Math.max(n, 1);
     const tIdx = drawn && room.target
       ? people.findIndex((p) => p.name.toLowerCase() === room.target.toLowerCase())
       : -1;
@@ -572,9 +596,10 @@
           state.shownNames.has(key) && "named",
           !isNew && "seen",
         ].filter(Boolean).join(" ");
+        const label = t(p.online ? "online" : "offline");
         return `
           <div class="${classes}" style="--a:${angleOf(i)}deg" title="${esc(p.name)}" data-action="name" data-key="${esc(key)}"${isTarget ? " data-target" : ""}>
-            <div class="dot">${esc(initials(p.name))}<span class="presence ${p.online ? "on" : "off"}" title="${esc(t(p.online ? "online" : "offline"))}" aria-label="${esc(t(p.online ? "online" : "offline"))}"></span></div>
+            <div class="dot">${esc(initials(p.name))}<span class="presence ${p.online ? "on" : "off"}" title="${esc(label)}" aria-label="${esc(label)}"></span></div>
             <span class="label">${esc(p.name)}</span>
           </div>`;
       })
@@ -588,6 +613,18 @@
       <div class="wheel">${orbs}</div>`;
 
     if (drawn) playSpin(stage.querySelector(".wheel"), room.drawnAt, tIdx, n);
+  }
+
+  function patchPresence(people) {
+    document.querySelectorAll("#stage .orb").forEach((orb, i) => {
+      const p = people[i];
+      const dot = orb.querySelector(".presence");
+      if (!p || !dot) return;
+      dot.className = `presence ${p.online ? "on" : "off"}`;
+      const label = t(p.online ? "online" : "offline");
+      dot.title = label;
+      dot.setAttribute("aria-label", label);
+    });
   }
 
   function playSpin(wheel, drawnAt, tIdx, n) {
@@ -609,7 +646,7 @@
       state.landedFor = drawnAt;
       setTimeout(() => {
         flashLanding();
-        if (state.room) paintSide(state.room);
+        openPick();
       }, SPIN_MS - elapsed + 40);
     }
   }
@@ -618,6 +655,7 @@
   function flashLanding() {
     const dot = document.querySelector(".orb[data-target] .dot");
     if (!dot) return;
+    dot.closest(".orb").classList.add("is-target");
     dot.animate(
       [
         { transform: "scale(1)", boxShadow: "0 0 0 0 rgba(255, 122, 182, 0.9)" },
@@ -646,16 +684,38 @@
       </div>`;
   }
 
-  // Only the giver gets this panel, and only once the ring has stopped.
-  function giftPanel(room, spinning) {
-    if (!room.target || spinning) return "";
+  // The pick pop-up: the person you give to, and their wishes (or the default line).
+  function openPick() {
+    const room = state.room;
+    if (!room?.target) return;
+    const el = $("#overlay");
     const chips = wishChips(room.targetWishes || "");
-    return `<div class="gift-panel">
+    el.classList.remove("is-closing");
+    el.hidden = false;
+    el.innerHTML = `
+      <div class="pick-card" role="dialog" aria-modal="true" aria-labelledby="pickName">
+        <button class="pick-close" type="button" data-action="close" aria-label="${esc(t("close_btn"))}">${ICON.close}</button>
+        <span class="kicker">${esc(t("pick_kicker"))}</span>
+        <h2 class="pick-name" id="pickName">${esc(room.target)}</h2>
         <span class="mini-label">${esc(t("gift_title", { name: room.target }))}</span>
         ${chips
           ? `<div class="chips">${chips}</div>`
           : `<p class="default-wish">${esc(t("wishes_default"))}</p>`}
+        <button class="btn btn-ghost" type="button" data-action="close">${esc(t("close_btn"))}</button>
       </div>`;
+  }
+
+  function closePick() {
+    const el = $("#overlay");
+    if (!el || el.hidden || el.classList.contains("is-closing")) return;
+    el.classList.add("is-closing");
+    setTimeout(() => {
+      if (el.classList.contains("is-closing")) {
+        el.hidden = true;
+        el.innerHTML = "";
+        el.classList.remove("is-closing");
+      }
+    }, 450);
   }
 
   function peopleStrip(room) {
@@ -675,7 +735,6 @@
     const side = $("#side");
     if (!side) return;
 
-    const spinning = !!room.drawnAt && serverNow() - room.drawnAt < SPIN_MS;
     const sig = JSON.stringify([
       state.lang,
       room.status,
@@ -683,9 +742,7 @@
       room.target,
       room.min,
       state.busy,
-      room.targetWishes,
       room.me?.wishes,
-      spinning,
       room.participants.map((p) => [p.name, p.isHost, p.isMe, p.online]),
     ]);
     if (sig === state.sideSig) return;
@@ -722,7 +779,7 @@
       <div>
         <p class="section-title">${esc(t("drawn_label"))}</p>
       </div>
-      ${giftPanel(room, spinning)}
+      ${room.target ? `<button class="btn btn-primary" type="button" data-action="pick"><span>${esc(t("show_pick"))}</span>${ICON.arrow}</button>` : ""}
       <div>
         <p class="section-title people-title">${esc(t("people"))}<span class="legend"><i class="presence-chip on"></i>${esc(t("online"))} <i class="presence-chip off"></i>${esc(t("offline"))}</span></p>
         ${peopleStrip(room)}
@@ -857,9 +914,15 @@
         const key = el.dataset.key;
         if (state.shownNames.has(key)) state.shownNames.delete(key);
         else state.shownNames.add(key);
-        if (state.room) paintStage(state.room);
+        el.classList.toggle("named", state.shownNames.has(key));
         break;
       }
+      case "pick":
+        openPick();
+        break;
+      case "close":
+        closePick();
+        break;
       case "draw":
         onDraw();
         break;
@@ -895,6 +958,13 @@
       target.value = target.value.toUpperCase().replace(/[^A-HJ-NP-Z2-9]/g, "").slice(0, 6);
       state.form.code = target.value;
     }
+  });
+
+  $("#overlay").addEventListener("click", (e) => {
+    if (e.target.id === "overlay") closePick();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closePick();
   });
 
   $("#langBtn").addEventListener("click", () => {

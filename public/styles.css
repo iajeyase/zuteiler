@@ -1531,3 +1531,24 @@ svg {
   animation: none;
   stroke-dashoffset: 0;
 }
+
+/* pointer at the top: the ring stops with your target under it */
+.pointer {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 0;
+  height: 0;
+  transform: translateX(-50%);
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-top: 14px solid var(--a2);
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.35));
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* the person you give to, shown after the spin has stopped */
+.orb.is-target .dot {
+  box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--a2), 0 0 28px -4px var(--a2);
+}

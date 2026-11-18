@@ -235,8 +235,7 @@
     refreshing: false,
     serverOffset: 0,   // client clock minus server clock, updated on every sync
     spinSeen: null,    // which draw's spin was already started
-    spinUntil: 0,      // client time when the spin is over (reveal is locked until then)
-    linkKey: null,     // which arrow is on screen
+    landedFor: null,   // which draw already flashed the landing orb
   };
 
   const viewIsRoom = () =>
@@ -253,9 +252,8 @@
     state.seen = new Set();
     state.revealed = false;
     state.sideSig = "";
-    state.linkKey = null;
     state.spinSeen = null;
-    state.spinUntil = 0;
+    state.landedFor = null;
     store.del("zuteiler.session");
   }
 
@@ -514,6 +512,15 @@
     paintSide(state.room);
   }
 
+  // The spin is the same timeline for everybody (server timestamp), but each person's
+  // wheel stops on their own target. Nobody else's pair is ever sent to the browser.
+  const SPIN_MS = 4500;
+  const SPIN_TURNS = 4;
+
+  function serverNow() {
+    return Date.now() - (state.serverOffset || 0);
+  }
+
   function paintStage(room) {
     const stage = $("#stage");
     if (!stage) return;
@@ -523,103 +530,75 @@
     const drawn = room.status === "drawn";
     const angleOf = (i) => (i * 360) / Math.max(n, 1);
 
-    const meIdx = people.findIndex((p) => p.isMe);
     const tIdx = drawn && room.target
       ? people.findIndex((p) => p.name.toLowerCase() === room.target.toLowerCase())
       : -1;
-    // The arrow only exists while the person has opened their card, so nobody
-    // nearby can read the target off the screen.
-    const showLink = state.revealed && drawn && meIdx > -1 && tIdx > -1;
-    const linkKey = showLink ? `${meIdx}-${tIdx}` : null;
-    const linkIsNew = linkKey !== state.linkKey;
-    state.linkKey = linkKey;
+    const spinning = drawn && !!room.drawnAt && serverNow() - room.drawnAt < SPIN_MS;
 
     const orbs = people
       .map((p, i) => {
         const key = p.name.toLowerCase();
         const isNew = !state.seen.has(key);
         state.seen.add(key);
+        const isTarget = drawn && i === tIdx;
         const classes = [
           "orb",
           p.isHost && "is-host",
           p.isMe && "is-me",
-          showLink && !p.isMe && i !== tIdx && "is-dim",
+          isTarget && !spinning && "is-target",
           !isNew && "seen",
         ].filter(Boolean).join(" ");
         return `
-          <div class="${classes}" style="--a:${angleOf(i)}deg" title="${esc(p.name)}">
+          <div class="${classes}" style="--a:${angleOf(i)}deg" title="${esc(p.name)}"${isTarget ? " data-target" : ""}>
             <div class="dot">${esc(initials(p.name))}<span class="presence ${p.online ? "on" : "off"}" title="${esc(t(p.online ? "online" : "offline"))}" aria-label="${esc(t(p.online ? "online" : "offline"))}"></span></div>
             <span class="label">${esc(p.name)}</span>
           </div>`;
       })
       .join("");
 
-    // Only the person's own arrow is drawn. Everybody else stays hidden.
-    let links = "";
-    if (showLink) {
-      const a1 = angleOf(meIdx);
-      const a2 = angleOf(tIdx);
-      const d = ((a2 - a1 + 540) % 360) - 180;       // shortest signed difference
-      const sign = Math.sign(d) || 1;
-      const off = 11;                                // keep the line clear of the dots
-      const start = a1 + sign * off;
-      const end = a2 - sign * off;
-      const mid = a1 + d / 2;
-      const P = (deg, rad) => {
-        const rad_ = (deg * Math.PI) / 180;
-        return `${(50 + rad * Math.sin(rad_)).toFixed(2)} ${(50 - rad * Math.cos(rad_)).toFixed(2)}`;
-      };
-      links = `<path class="${linkIsNew ? "" : "static"}" pathLength="1" d="M${P(start, 38)} Q${P(mid, 6)} ${P(end, 38)}" marker-end="url(#arrowHead)"/>`;
-    }
-
     const centerText = esc(t(drawn ? "center_drawn" : "center_open"));
     stage.innerHTML = `
       <div class="stage-ring"></div>
-      <svg class="links" viewBox="0 0 100 100" aria-hidden="true">
-        <defs>
-          <linearGradient id="linkGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" style="stop-color:var(--a1)"/>
-            <stop offset="0.5" style="stop-color:var(--a2)"/>
-            <stop offset="1" style="stop-color:var(--a3)"/>
-          </linearGradient>
-          <marker id="arrowHead" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4.5" markerHeight="4.5" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
-            <path d="M0 0L10 5L0 10z" style="fill:var(--a2)"/>
-          </marker>
-        </defs>
-        ${links}
-      </svg>
+      <div class="pointer" aria-hidden="true"></div>
       <div class="stage-center"><div><strong>${n}</strong>${centerText}</div></div>
       <div class="wheel">${orbs}</div>`;
 
-    playSpin(stage.querySelector(".wheel"), room.drawnAt);
+    if (drawn) playSpin(stage.querySelector(".wheel"), room.drawnAt, tIdx, n);
   }
 
-  // The spin is the same for everybody: the server sends when the draw happened,
-  // and every client plays the same animation at the same offset into it.
-  // Late joiners see the rest of the spin, or nothing if it is already over.
-  const SPIN_MS = 3800;
-  const SPIN_TURNS = 4;
-
-  function serverNow() {
-    return Date.now() - (state.serverOffset || 0);
-  }
-
-  function playSpin(wheel, drawnAt) {
-    if (!wheel || !drawnAt) return;
+  function playSpin(wheel, drawnAt, tIdx, n) {
+    if (!wheel || !drawnAt || tIdx < 0) return;
     const elapsed = Math.max(0, serverNow() - drawnAt);
+    // Turn the ring so that the target sits under the pointer at the top.
+    const landAngle = (tIdx * 360) / Math.max(n, 1);
+    const finalDeg = SPIN_TURNS * 360 - landAngle;
+    wheel.style.transform = `rotate(${finalDeg}deg)`;
     if (elapsed >= SPIN_MS) return;
+
     const anim = wheel.animate(
-      [
-        { transform: "rotate(0deg)" },
-        { transform: `rotate(${SPIN_TURNS * 360}deg)` },
-      ],
-      { duration: SPIN_MS, easing: "cubic-bezier(0.15, 0.55, 0.12, 1)", fill: "none" }
+      [{ transform: "rotate(0deg)" }, { transform: `rotate(${finalDeg}deg)` }],
+      { duration: SPIN_MS, easing: "cubic-bezier(0.15, 0.6, 0.1, 1)", fill: "none" }
     );
     anim.currentTime = elapsed;
-    if (drawnAt !== state.spinSeen) {
-      state.spinSeen = drawnAt;
-      state.spinUntil = Date.now() + (SPIN_MS - elapsed);
+
+    if (drawnAt !== state.landedFor) {
+      state.landedFor = drawnAt;
+      setTimeout(flashLanding, SPIN_MS - elapsed);
     }
+  }
+
+  // The moment the ring stops: the landing person's orb flashes.
+  function flashLanding() {
+    const dot = document.querySelector(".orb[data-target] .dot");
+    if (!dot) return;
+    dot.animate(
+      [
+        { transform: "scale(1)", boxShadow: "0 0 0 0 rgba(255, 122, 182, 0.9)" },
+        { transform: "scale(1.5)", boxShadow: "0 0 0 28px rgba(255, 122, 182, 0)", offset: 0.5 },
+        { transform: "scale(1)", boxShadow: "0 0 0 0 rgba(255, 122, 182, 0)" },
+      ],
+      { duration: 1100, easing: "cubic-bezier(0.2, 0.9, 0.3, 1.2)" }
+    );
   }
 
   function peopleStrip(room) {
@@ -677,36 +656,15 @@
       return;
     }
 
-    const reveal = room.target
-      ? `
-        <button class="reveal ${state.revealed ? "is-open" : ""}" type="button" data-action="reveal" aria-pressed="${state.revealed}">
-          <div class="reveal-inner">
-            <div class="reveal-face reveal-front">
-              ${ICON.lock}
-              <span class="cta">${esc(t("reveal_front"))}</span>
-              <span class="sub">${esc(t("reveal_sub"))}</span>
-            </div>
-            <div class="reveal-face reveal-back">
-              <span class="kicker">${esc(t("reveal_kicker"))}</span>
-              <span class="target">${esc(room.target)}</span>
-              <span class="gift">${esc(t("reveal_again"))}</span>
-            </div>
-          </div>
-        </button>`
-      : `<p class="side-sub">${esc(t("not_in_draw"))}</p>`;
-
     side.innerHTML = `
       <div>
         <p class="section-title">${esc(t("drawn_label"))}</p>
-        <h2 class="side-title">${esc(t("your_gift"))}</h2>
       </div>
-      ${reveal}
-      <p class="side-sub center">${esc(t("reveal_hint"))}</p>
-      ${isHost ? `<button class="btn btn-ghost" type="button" data-action="reset" ${state.busy ? "disabled" : ""}>${esc(t("btn_reset"))}</button>` : ""}
       <div>
         <p class="section-title people-title">${esc(t("people"))}<span class="legend"><i class="presence-chip on"></i>${esc(t("online"))} <i class="presence-chip off"></i>${esc(t("offline"))}</span></p>
         ${peopleStrip(room)}
       </div>
+      ${isHost ? `<button class="btn btn-ghost" type="button" data-action="reset" ${state.busy ? "disabled" : ""}>${esc(t("btn_reset"))}</button>` : ""}
       <button class="linkish" type="button" data-action="leave">${esc(t("btn_leave"))}</button>`;
   }
 
@@ -796,7 +754,7 @@
     if (state.pollId) return;
     state.pollId = setInterval(() => {
       if (document.visibilityState === "visible") refresh();
-    }, 3000);
+    }, 2000);
   }
 
   function stopPolling() {
@@ -843,14 +801,6 @@
         break;
       case "copy":
         onCopy();
-        break;
-      case "reveal":
-        // Locked while the ring is still spinning, so nobody flips early.
-        if (Date.now() < state.spinUntil) break;
-        state.revealed = !state.revealed;
-        el.classList.toggle("is-open", state.revealed);
-        el.setAttribute("aria-pressed", String(state.revealed));
-        if (state.room) paintStage(state.room); // shows or hides the arrow
         break;
       default:
         break;

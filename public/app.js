@@ -275,8 +275,7 @@
     state.seen = new Set();
     state.revealed = false;
     state.sideSig = "";
-    state.spinSeen = null;
-    state.landedFor = null;
+    state.spin = null;
     store.del("zuteiler.session");
   }
 
@@ -627,28 +626,37 @@
     });
   }
 
+  // Each client plays the spin once per draw:
+  // - live: it sees the draw happen, so the timeline starts at the server's draw time
+  //   (everybody is in sync), and the pick pop-up opens when the ring stops.
+  // - late: the tab was in the background or the person came back later, so the spin
+  //   plays once from the start, without the pop-up. Nobody misses it.
   function playSpin(wheel, drawnAt, tIdx, n) {
     if (!wheel || !drawnAt || tIdx < 0) return;
-    const elapsed = Math.max(0, serverNow() - drawnAt);
     // Turn the ring so that the target sits under the pointer at the top.
     const landAngle = (tIdx * 360) / Math.max(n, 1);
     const finalDeg = SPIN_TURNS * 360 - landAngle;
     wheel.style.transform = `rotate(${finalDeg}deg)`;
-    if (elapsed >= SPIN_MS) return;
+
+    if (!state.spin || state.spin.drawnAt !== drawnAt) {
+      const live = serverNow() - drawnAt < SPIN_MS;
+      state.spin = { drawnAt, start: live ? drawnAt : serverNow(), live };
+      if (live) {
+        setTimeout(() => {
+          flashLanding();
+          openPick();
+        }, state.spin.start + SPIN_MS - serverNow() + 40);
+      }
+    }
+
+    const elapsed = serverNow() - state.spin.start;
+    if (elapsed >= SPIN_MS || elapsed < 0) return;
 
     const anim = wheel.animate(
       [{ transform: "rotate(0deg)" }, { transform: `rotate(${finalDeg}deg)` }],
       { duration: SPIN_MS, easing: "cubic-bezier(0.15, 0.6, 0.1, 1)", fill: "none" }
     );
     anim.currentTime = elapsed;
-
-    if (drawnAt !== state.landedFor) {
-      state.landedFor = drawnAt;
-      setTimeout(() => {
-        flashLanding();
-        openPick();
-      }, SPIN_MS - elapsed + 40);
-    }
   }
 
   // The moment the ring stops: the landing person's orb flashes.

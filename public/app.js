@@ -123,6 +123,8 @@
       err_unauthorized: "Your session has expired. Please sign in again.",
       err_serverError: "Something went wrong. Try again.",
       err_network: "No connection. Check your internet and try again.",
+      online: "Online",
+      offline: "Offline",
     },
     de: {
       hero_1: "Wer schenkt",
@@ -197,6 +199,8 @@
       err_unauthorized: "Deine Sitzung ist abgelaufen. Bitte melde dich erneut an.",
       err_serverError: "Etwas ist schiefgelaufen. Versuch es nochmal.",
       err_network: "Keine Verbindung. Prüfe dein Internet und versuch es erneut.",
+      online: "Online",
+      offline: "Offline",
     },
   };
 
@@ -534,7 +538,7 @@
         ].filter(Boolean).join(" ");
         return `
           <div class="${classes}" style="--a:${angleOf(i)}deg" title="${esc(p.name)}">
-            <div class="dot">${esc(initials(p.name))}</div>
+            <div class="dot">${esc(initials(p.name))}<span class="presence ${p.online ? "on" : "off"}" title="${esc(t(p.online ? "online" : "offline"))}" aria-label="${esc(t(p.online ? "online" : "offline"))}"></span></div>
             <span class="label">${esc(p.name)}</span>
           </div>`;
       })
@@ -584,6 +588,7 @@
         (p, i) => `
           <li class="${p.isMe ? "is-me" : ""}" style="animation-delay:${i * 60}ms">
             <b>${esc(initials(p.name))}</b>${esc(p.name)}
+            <i class="presence-chip ${p.online ? "on" : "off"}" title="${esc(t(p.online ? "online" : "offline"))}" aria-label="${esc(t(p.online ? "online" : "offline"))}"></i>
             ${p.isHost ? `<span class="tag">${esc(t("host_tag"))}</span>` : ""}
           </li>`
       )
@@ -601,7 +606,7 @@
       room.target,
       room.min,
       state.busy,
-      room.participants.map((p) => [p.name, p.isHost, p.isMe]),
+      room.participants.map((p) => [p.name, p.isHost, p.isMe, p.online]),
     ]);
     if (sig === state.sideSig) return;
     state.sideSig = sig;
@@ -625,7 +630,7 @@
           ? `<button class="btn btn-primary ${ready ? "is-ready" : ""}" type="button" data-action="draw" ${ready && !state.busy ? "" : "disabled"}>${ICON.shuffle}<span>${esc(t(state.busy ? "btn_drawing" : "btn_draw"))}</span></button>`
           : `<div class="waiting-note">${esc(t("waiting_host"))}<span class="dots"></span></div>`}
         <div>
-          <p class="section-title">${esc(t("people"))}</p>
+          <p class="section-title people-title">${esc(t("people"))}<span class="legend"><i class="presence-chip on"></i>${esc(t("online"))} <i class="presence-chip off"></i>${esc(t("offline"))}</span></p>
           ${peopleStrip(room)}
         </div>
         <button class="linkish" type="button" data-action="leave">${esc(t("btn_leave"))}</button>`;
@@ -659,7 +664,7 @@
       <p class="side-sub center">${esc(t("reveal_hint"))}</p>
       ${isHost ? `<button class="btn btn-ghost" type="button" data-action="reset" ${state.busy ? "disabled" : ""}>${esc(t("btn_reset"))}</button>` : ""}
       <div>
-        <p class="section-title">${esc(t("people"))}</p>
+        <p class="section-title people-title">${esc(t("people"))}<span class="legend"><i class="presence-chip on"></i>${esc(t("online"))} <i class="presence-chip off"></i>${esc(t("offline"))}</span></p>
         ${peopleStrip(room)}
       </div>
       <button class="linkish" type="button" data-action="leave">${esc(t("btn_leave"))}</button>`;

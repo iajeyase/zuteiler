@@ -6,9 +6,6 @@
  * (PBKDF2-SHA256), session tokens are only stored as SHA-256 hashes.
  */
 
-// Admin address that gets a mail every time someone new joins a room.
-const ADMIN_EMAIL = "jathu733@gmail.com";
-
 const MIN_PASSWORD = 4;     // at least 4 characters
 const MAX_PASSWORD = 100;
 const MAX_NAME = 20;
@@ -17,6 +14,12 @@ const MAX_PLAYERS = 40;
 const PBKDF2_ITERATIONS = 100000; // Workers' maximum for PBKDF2
 const LOCK_AFTER_FAILS = 8;       // wrong passwords before a name is locked
 const LOCK_MINUTES = 5;
+
+// Presence: a person counts as online if they were seen in the last 40 seconds.
+// The database is only written when the last stored value is older than 15 seconds,
+// so polling every few seconds does not burn through the free write quota.
+const ONLINE_MS = 40_000;
+const SEEN_WRITE_MS = 15_000;
 
 // 32 characters, no 0/O/1/I so codes are easy to read out loud.
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -114,42 +117,6 @@ async function authenticate(request, env, code) {
     .first();
 }
 
-/** Fire-and-forget mail to the admin via Resend (https://resend.com, free tier). */
-function notifyAdmin(env, ctx, { code, name, isHost, count }) {
-  if (!env.RESEND_API_KEY) {
-    console.warn("RESEND_API_KEY is not set - admin mail skipped");
-    return;
-  }
-  const subject = `Zuteiler: ${name} ${isHost ? "created" : "joined"} room ${code}`;
-  const text = [
-    `${name} ${isHost ? "created the room" : "joined the room"} ${code}.`,
-    `Players in the room now: ${count}`,
-    `Time: ${new Date().toISOString()}`,
-  ].join("\n");
-
-  ctx.waitUntil(
-    fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${env.RESEND_API_KEY}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        // onboarding@resend.dev works without a domain, but Resend only delivers
-        // to the address of your Resend account. Replace with your own domain later.
-        from: "Zuteiler <onboarding@resend.dev>",
-        to: [ADMIN_EMAIL],
-        subject,
-        text,
-      }),
-    })
-      .then(async (res) => {
-        if (!res.ok) console.error("Resend error", res.status, await res.text());
-      })
-      .catch((err) => console.error("Resend request failed", err))
-  );
-}
-
 async function countPlayers(env, code) {
   const row = await env.DB.prepare(
     "SELECT COUNT(*) AS n FROM participants WHERE room_code = ?"
@@ -161,7 +128,7 @@ async function countPlayers(env, code) {
 
 // ---------------------------------------------------------------- handlers
 
-async function createRoom(request, env, ctx) {
+async function createRoom(request, env) {
   const body = await readBody(request);
   const name = cleanName(body.name);
   if (!name) return fail(400, "nameRequired");
@@ -191,11 +158,10 @@ async function createRoom(request, env, ctx) {
     ).bind(code, name, name.toLowerCase(), salt, passHash, await sha256Hex(token), now),
   ]);
 
-  notifyAdmin(env, ctx, { code, name, isHost: true, count: 1 });
   return json({ code, token, name, isHost: true }, 201);
 }
 
-async function joinRoom(request, env, ctx, code) {
+async function joinRoom(request, env, code) {
   const body = await readBody(request);
   const name = cleanName(body.name);
   if (!name) return fail(400, "nameRequired");
@@ -230,9 +196,9 @@ async function joinRoom(request, env, ctx, code) {
 
     const token = randomHex(32);
     await env.DB.prepare(
-      "UPDATE participants SET token_hash = ?, failed = 0, locked_until = 0 WHERE id = ?"
+      "UPDATE participants SET token_hash = ?, failed = 0, locked_until = 0, last_seen = ? WHERE id = ?"
     )
-      .bind(await sha256Hex(token), existing.id)
+      .bind(await sha256Hex(token), now, existing.id)
       .run();
     return json({ code, token, name: existing.name, isHost: !!existing.is_host });
   }
@@ -247,18 +213,16 @@ async function joinRoom(request, env, ctx, code) {
   try {
     await env.DB.prepare(
       `INSERT INTO participants
-         (room_code, name, name_key, pass_salt, pass_hash, token_hash, is_host, joined_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?)`
+         (room_code, name, name_key, pass_salt, pass_hash, token_hash, is_host, joined_at, last_seen)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`
     )
-      .bind(code, name, name.toLowerCase(), salt, passHash, await sha256Hex(token), Date.now())
+      .bind(code, name, name.toLowerCase(), salt, passHash, await sha256Hex(token), Date.now(), Date.now())
       .run();
   } catch {
     // Lost a race with someone who took the same name a moment ago.
     return fail(409, "nameTaken");
   }
 
-  const count = await countPlayers(env, code);
-  notifyAdmin(env, ctx, { code, name, isHost: false, count });
   return json({ code, token, name, isHost: false }, 201);
 }
 
@@ -274,8 +238,16 @@ async function getRoom(request, env, code) {
     return json({ code, status: room.status, exists: true });
   }
 
+  const now = Date.now();
+  if (now - (me.last_seen || 0) > SEEN_WRITE_MS) {
+    await env.DB.prepare("UPDATE participants SET last_seen = ? WHERE id = ?")
+      .bind(now, me.id)
+      .run();
+    me.last_seen = now;
+  }
+
   const { results } = await env.DB.prepare(
-    `SELECT id, name, is_host FROM participants
+    `SELECT id, name, is_host, last_seen FROM participants
       WHERE room_code = ? ORDER BY joined_at, id`
   )
     .bind(code)
@@ -302,6 +274,7 @@ async function getRoom(request, env, code) {
       name: p.name,
       isHost: !!p.is_host,
       isMe: p.name.toLowerCase() === me.name_key,
+      online: now - (p.last_seen || 0) < ONLINE_MS,
     })),
   });
 }
@@ -355,19 +328,19 @@ async function resetRoom(request, env, code) {
 
 // ---------------------------------------------------------------- router
 
-async function route(request, url, env, ctx) {
+async function route(request, url, env) {
   const parts = url.pathname.split("/").filter(Boolean); // ["api", "rooms", CODE, action]
   const method = request.method;
 
   if (parts[0] !== "api" || parts[1] !== "rooms") return fail(404, "notFound");
-  if (parts.length === 2 && method === "POST") return createRoom(request, env, ctx);
+  if (parts.length === 2 && method === "POST") return createRoom(request, env);
 
   const code = (parts[2] || "").toUpperCase();
   if (!CODE_PATTERN.test(code)) return fail(404, "roomNotFound");
 
   const action = parts[3];
   if (!action && method === "GET") return getRoom(request, env, code);
-  if (action === "join" && method === "POST") return joinRoom(request, env, ctx, code);
+  if (action === "join" && method === "POST") return joinRoom(request, env, code);
   if (action === "draw" && method === "POST") return drawRoom(request, env, code);
   if (action === "reset" && method === "POST") return resetRoom(request, env, code);
 
@@ -375,11 +348,11 @@ async function route(request, url, env, ctx) {
 }
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
     try {
-      return await route(request, url, env, ctx);
+      return await route(request, url, env);
     } catch (err) {
       console.error(err);
       return fail(500, "serverError");

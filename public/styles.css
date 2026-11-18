@@ -1446,3 +1446,74 @@ svg {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------- presence (online / offline) ----------------------------------- */
+
+.presence {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid var(--bg);
+  background: var(--faint);
+  transition: background 0.5s var(--ease);
+}
+
+.presence.on {
+  background: var(--ok);
+  animation: presence 2.4s ease-out infinite;
+}
+
+.presence-chip {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex: none;
+}
+
+.presence-chip.on {
+  background: var(--ok);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent);
+  animation: presence 2.4s ease-out infinite;
+}
+
+.people-strip li .presence-chip {
+  margin-left: 2px;
+}
+
+.people-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--faint);
+}
+
+.legend .presence-chip {
+  margin-left: 4px;
+}
+
+.legend .presence-chip:first-child {
+  margin-left: 0;
+}
+
+@keyframes presence {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
+  70%  { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}

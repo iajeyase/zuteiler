@@ -15,11 +15,13 @@ const PBKDF2_ITERATIONS = 100000; // Workers' maximum for PBKDF2
 const LOCK_AFTER_FAILS = 8;       // wrong passwords before a name is locked
 const LOCK_MINUTES = 5;
 
-// Presence: a person counts as online if they were seen in the last 40 seconds.
-// The database is only written when the last stored value is older than 15 seconds,
-// so polling every few seconds does not burn through the free write quota.
-const ONLINE_MS = 40_000;
-const SEEN_WRITE_MS = 15_000;
+// Presence: the browser polls every 3 seconds. A person counts as online if they were
+// seen in the last 15 seconds. The database is only written when the stored value is
+// older than 10 seconds, which keeps the free write quota comfortable.
+// Leaving the page sends an explicit "offline" signal, so the dot turns grey at once;
+// the 15 second window is only the fallback for crashes or closed devices.
+const ONLINE_MS = 15_000;
+const SEEN_WRITE_MS = 10_000;
 
 // 32 characters, no 0/O/1/I so codes are easy to read out loud.
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -227,7 +229,7 @@ async function joinRoom(request, env, code) {
 }
 
 async function getRoom(request, env, code) {
-  const room = await env.DB.prepare("SELECT code, status FROM rooms WHERE code = ?")
+  const room = await env.DB.prepare("SELECT code, status, drawn_at FROM rooms WHERE code = ?")
     .bind(code)
     .first();
   if (!room) return fail(404, "roomNotFound");
@@ -266,6 +268,9 @@ async function getRoom(request, env, code) {
     code,
     status: room.status,
     exists: true,
+    // Server clock and draw time: lets every client play the spin at the same moment.
+    serverNow: now,
+    drawnAt: room.drawn_at ?? null,
     min: MIN_PLAYERS,
     max: MAX_PLAYERS,
     me: { name: me.name, isHost: !!me.is_host },
@@ -314,6 +319,20 @@ async function drawRoom(request, env, code) {
   return json({ ok: true });
 }
 
+// Called by navigator.sendBeacon when the page is hidden or closed. A beacon cannot
+// send headers, so the token travels in the body. Only the token holder can mark
+// themselves offline, so nobody else can switch someone else's dot.
+async function offlineRoom(request, env, code) {
+  const body = await readBody(request);
+  if (typeof body.token !== "string" || !body.token) return fail(400, "unauthorized");
+  await env.DB.prepare(
+    "UPDATE participants SET last_seen = 0 WHERE room_code = ? AND token_hash = ?"
+  )
+    .bind(code, await sha256Hex(body.token))
+    .run();
+  return new Response(null, { status: 204 });
+}
+
 async function resetRoom(request, env, code) {
   const me = await authenticate(request, env, code);
   if (!me) return fail(401, "unauthorized");
@@ -343,6 +362,7 @@ async function route(request, url, env) {
   if (action === "join" && method === "POST") return joinRoom(request, env, code);
   if (action === "draw" && method === "POST") return drawRoom(request, env, code);
   if (action === "reset" && method === "POST") return resetRoom(request, env, code);
+  if (action === "offline" && method === "POST") return offlineRoom(request, env, code);
 
   return fail(404, "notFound");
 }

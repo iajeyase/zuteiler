@@ -1517,3 +1517,17 @@ svg {
   70%  { box-shadow: 0 0 0 7px transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
 }
+
+/* ---------- the spinning ring ----------------------------------------------- */
+
+.wheel {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+
+/* arrow that is already on screen does not draw itself again on every poll */
+.links path.static {
+  animation: none;
+  stroke-dashoffset: 0;
+}

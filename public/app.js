@@ -83,8 +83,8 @@
       ready: "Everyone is here",
       ready_sub: "Draw whenever you like. Each person gets exactly one name.",
       min_note: "At least {min} people are needed.",
-      btn_draw: "Draw the ring",
-      btn_drawing: "Shuffling",
+      btn_draw: "Spin the ring",
+      btn_drawing: "Spinning",
       waiting_host: "Waiting for the host to draw",
       people: "People",
       host_tag: "Host",
@@ -100,7 +100,6 @@
       confirm_reset: "Reset the draw? Every pick is cleared and the host can draw again.",
       btn_leave: "Leave room on this device",
       confirm_leave: "Leave this room on this device? You can sign back in with your name and password.",
-      overlay_caption: "Shuffling the ring",
       toast_created: "Room {code} created",
       toast_welcome: "Welcome, {name}",
       toast_drawn: "The ring is drawn",
@@ -159,8 +158,8 @@
       ready: "Alle sind da",
       ready_sub: "Zieh, wann du willst. Jede Person bekommt genau einen Namen.",
       min_note: "Mindestens {min} Personen werden benötigt.",
-      btn_draw: "Kreis ziehen",
-      btn_drawing: "Wird gemischt",
+      btn_draw: "Ring drehen",
+      btn_drawing: "Dreht sich",
       waiting_host: "Warten, bis der Host zieht",
       people: "Personen",
       host_tag: "Host",
@@ -176,7 +175,6 @@
       confirm_reset: "Ziehung zurücksetzen? Alle Zuteilungen werden gelöscht und der Host kann neu ziehen.",
       btn_leave: "Raum auf diesem Gerät verlassen",
       confirm_leave: "Raum auf diesem Gerät verlassen? Mit Name und Passwort kannst du dich wieder anmelden.",
-      overlay_caption: "Der Kreis wird gemischt",
       toast_created: "Raum {code} erstellt",
       toast_welcome: "Willkommen, {name}",
       toast_drawn: "Der Kreis ist gezogen",
@@ -235,6 +233,10 @@
     sideSig: "",
     pollId: null,
     refreshing: false,
+    serverOffset: 0,   // client clock minus server clock, updated on every sync
+    spinSeen: null,    // which draw's spin was already started
+    spinUntil: 0,      // client time when the spin is over (reveal is locked until then)
+    linkKey: null,     // which arrow is on screen
   };
 
   const viewIsRoom = () =>
@@ -251,6 +253,9 @@
     state.seen = new Set();
     state.revealed = false;
     state.sideSig = "";
+    state.linkKey = null;
+    state.spinSeen = null;
+    state.spinUntil = 0;
     store.del("zuteiler.session");
   }
 
@@ -522,7 +527,12 @@
     const tIdx = drawn && room.target
       ? people.findIndex((p) => p.name.toLowerCase() === room.target.toLowerCase())
       : -1;
-    const showLink = drawn && meIdx > -1 && tIdx > -1;
+    // The arrow only exists while the person has opened their card, so nobody
+    // nearby can read the target off the screen.
+    const showLink = state.revealed && drawn && meIdx > -1 && tIdx > -1;
+    const linkKey = showLink ? `${meIdx}-${tIdx}` : null;
+    const linkIsNew = linkKey !== state.linkKey;
+    state.linkKey = linkKey;
 
     const orbs = people
       .map((p, i) => {
@@ -559,7 +569,7 @@
         const rad_ = (deg * Math.PI) / 180;
         return `${(50 + rad * Math.sin(rad_)).toFixed(2)} ${(50 - rad * Math.cos(rad_)).toFixed(2)}`;
       };
-      links = `<path pathLength="1" d="M${P(start, 38)} Q${P(mid, 6)} ${P(end, 38)}" marker-end="url(#arrowHead)"/>`;
+      links = `<path class="${linkIsNew ? "" : "static"}" pathLength="1" d="M${P(start, 38)} Q${P(mid, 6)} ${P(end, 38)}" marker-end="url(#arrowHead)"/>`;
     }
 
     const centerText = esc(t(drawn ? "center_drawn" : "center_open"));
@@ -579,7 +589,37 @@
         ${links}
       </svg>
       <div class="stage-center"><div><strong>${n}</strong>${centerText}</div></div>
-      ${orbs}`;
+      <div class="wheel">${orbs}</div>`;
+
+    playSpin(stage.querySelector(".wheel"), room.drawnAt);
+  }
+
+  // The spin is the same for everybody: the server sends when the draw happened,
+  // and every client plays the same animation at the same offset into it.
+  // Late joiners see the rest of the spin, or nothing if it is already over.
+  const SPIN_MS = 3800;
+  const SPIN_TURNS = 4;
+
+  function serverNow() {
+    return Date.now() - (state.serverOffset || 0);
+  }
+
+  function playSpin(wheel, drawnAt) {
+    if (!wheel || !drawnAt) return;
+    const elapsed = Math.max(0, serverNow() - drawnAt);
+    if (elapsed >= SPIN_MS) return;
+    const anim = wheel.animate(
+      [
+        { transform: "rotate(0deg)" },
+        { transform: `rotate(${SPIN_TURNS * 360}deg)` },
+      ],
+      { duration: SPIN_MS, easing: "cubic-bezier(0.15, 0.55, 0.12, 1)", fill: "none" }
+    );
+    anim.currentTime = elapsed;
+    if (drawnAt !== state.spinSeen) {
+      state.spinSeen = drawnAt;
+      state.spinUntil = Date.now() + (SPIN_MS - elapsed);
+    }
   }
 
   function peopleStrip(room) {
@@ -672,55 +712,14 @@
 
   // ------------------------------------------------------------ draw / reset / leave / copy
 
-  function openShuffle(names) {
-    const el = $("#overlay");
-    el.classList.remove("is-closing");
-    el.hidden = false;
-    el.innerHTML = `
-      <div class="overlay-inner">
-        <div class="overlay-name" id="shuffleName"></div>
-        <div class="overlay-caption">${esc(t("overlay_caption"))}</div>
-      </div>`;
-    const nameEl = el.querySelector("#shuffleName");
-    let stopped = false;
-    let delay = 50;
-    let timer = null;
-    const tick = () => {
-      if (stopped) return;
-      nameEl.textContent = names[Math.floor(Math.random() * names.length)] || "";
-      delay = Math.min(delay * 1.09, 280);   // slows down like a real shuffle
-      timer = setTimeout(tick, delay);
-    };
-    tick();
-    return {
-      close() {
-        stopped = true;
-        clearTimeout(timer);
-        el.classList.add("is-closing");
-        setTimeout(() => {
-          if (el.classList.contains("is-closing")) {
-            el.hidden = true;
-            el.innerHTML = "";
-            el.classList.remove("is-closing");
-          }
-        }, 500);
-      },
-    };
-  }
-
   async function onDraw() {
     if (state.busy || !state.room || !state.session) return;
-    const code = state.session.code;
-    const names = state.room.participants.map((p) => p.name);
     setBusy(true);
-    const overlay = openShuffle(names);
     try {
-      await Promise.all([api(`/rooms/${code}/draw`, { method: "POST" }), sleep(1900)]);
-      overlay.close();
-      toast(t("toast_drawn"));
+      // The spin starts for everybody from the server timestamp, see playSpin().
+      await api(`/rooms/${state.session.code}/draw`, { method: "POST" });
       await refresh();
     } catch (err) {
-      overlay.close();
       toast(errorMessage(err), true);
     } finally {
       setBusy(false);
@@ -776,6 +775,7 @@
         render();
         return;
       }
+      if (room.serverNow) state.serverOffset = Date.now() - room.serverNow;
       state.room = room;
       if ($(".lobby")) paintRoom();
       else renderRoom();
@@ -845,9 +845,12 @@
         onCopy();
         break;
       case "reveal":
+        // Locked while the ring is still spinning, so nobody flips early.
+        if (Date.now() < state.spinUntil) break;
         state.revealed = !state.revealed;
         el.classList.toggle("is-open", state.revealed);
         el.setAttribute("aria-pressed", String(state.revealed));
+        if (state.room) paintStage(state.room); // shows or hides the arrow
         break;
       default:
         break;
@@ -917,9 +920,22 @@
     );
   }
 
+  // Tell the server right away when the page is left, so the dot turns grey at once.
+  // sendBeacon survives page unloads; it is the reliable channel on iOS Safari.
+  function announceOffline() {
+    if (!state.session?.token || !navigator.sendBeacon) return;
+    const body = new Blob([JSON.stringify({ token: state.session.token })], { type: "application/json" });
+    navigator.sendBeacon(`/api/rooms/${state.session.code}/offline`, body);
+  }
+
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && state.session) refresh();
+    if (document.visibilityState === "visible") {
+      if (state.session) refresh();
+    } else {
+      announceOffline();
+    }
   });
+  window.addEventListener("pagehide", announceOffline);
 
   // Boot
   render();

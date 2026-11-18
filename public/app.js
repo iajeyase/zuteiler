@@ -124,6 +124,13 @@
       err_network: "No connection. Check your internet and try again.",
       online: "Online",
       offline: "Offline",
+      label_wishes: "For me, I'd love...",
+      wishes_hint: "Optional. Words or sentences, separated by commas or new lines. Only your giver sees them, after the spin.",
+      wishes_placeholder: "chocolate, a book, a walk together",
+      wishes_default: "Surprise them!",
+      your_wishes: "Your wishes",
+      no_wishes: "Nothing added yet",
+      gift_title: "Wishes of {name}",
     },
     de: {
       hero_1: "Wer schenkt",
@@ -199,6 +206,13 @@
       err_network: "Keine Verbindung. Prüfe dein Internet und versuch es erneut.",
       online: "Online",
       offline: "Offline",
+      label_wishes: "Für mich, ich hätte gerne...",
+      wishes_hint: "Optional. Wörter oder Sätze, durch Komma oder Zeilenumbruch getrennt. Nur deine Person sieht sie nach dem Drehen.",
+      wishes_placeholder: "Schokolade, ein Buch, ein gemeinsamer Spaziergang",
+      wishes_default: "Überrasche die Person!",
+      your_wishes: "Deine Wünsche",
+      no_wishes: "Noch nichts eingetragen",
+      gift_title: "Wünsche von {name}",
     },
   };
 
@@ -225,7 +239,7 @@
     session: store.get("zuteiler.session", null), // { code, token, name, isHost }
     room: null,        // last state from the server
     tab: inviteCode ? "join" : "create",
-    form: { name: "", password: "", code: inviteCode },
+    form: { name: "", password: "", code: inviteCode, wishes: "" },
     showPw: false,
     revealed: false,
     seen: new Set(),   // people already shown on the ring (no re-animation)
@@ -236,6 +250,7 @@
     serverOffset: 0,   // client clock minus server clock, updated on every sync
     spinSeen: null,    // which draw's spin was already started
     landedFor: null,   // which draw already flashed the landing orb
+    shownNames: new Set(), // names opened on the ring by tapping the circle
   };
 
   const viewIsRoom = () =>
@@ -354,6 +369,8 @@
     if (name) state.form.name = name.value;
     if (pw) state.form.password = pw.value;
     if (code) state.form.code = code.value;
+    const wishes = $("#wishes");
+    if (wishes) state.form.wishes = wishes.value;
   }
 
   function paintForm() {
@@ -387,6 +404,11 @@
           </div>
           <div class="strength s0" id="strength"><span></span><span></span><span></span><span></span></div>
           <p class="hint" id="pwHint">${esc(t("hint_pw"))}</p>
+        </div>
+        <div class="field">
+          <label for="wishes">${esc(t("label_wishes"))}</label>
+          <textarea id="wishes" rows="3" maxlength="500" placeholder="${esc(t("wishes_placeholder"))}">${esc(state.form.wishes)}</textarea>
+          <p class="hint">${esc(t("wishes_hint"))}</p>
         </div>
         <p class="error-text" id="formError" role="alert" hidden></p>
         <button class="btn btn-primary" type="submit" id="submitBtn" ${state.busy ? "disabled" : ""}>
@@ -442,6 +464,7 @@
     clearFormError();
     const name = form.elements.name ? form.elements.name.value.trim().replace(/\s+/g, " ") : "";
     const password = form.elements.pw ? form.elements.pw.value : "";
+    const wishes = form.elements.wishes ? form.elements.wishes.value.trim() : "";
     const code = form.elements.code ? form.elements.code.value.toUpperCase().trim() : "";
     const isJoin = state.tab === "join";
 
@@ -452,11 +475,11 @@
     setBusy(true);
     try {
       const data = isJoin
-        ? await api(`/rooms/${code}/join`, { method: "POST", body: { name, password }, auth: false })
-        : await api("/rooms", { method: "POST", body: { name, password }, auth: false });
+        ? await api(`/rooms/${code}/join`, { method: "POST", body: { name, password, wishes }, auth: false })
+        : await api("/rooms", { method: "POST", body: { name, password, wishes }, auth: false });
 
       saveSession({ code: data.code, token: data.token, name: data.name, isHost: data.isHost });
-      state.form = { name: "", password: "", code: "" };
+      state.form = { name: "", password: "", code: "", wishes: "" };
       state.room = null;
       state.seen = new Set();
       state.revealed = false;
@@ -546,10 +569,11 @@
           p.isHost && "is-host",
           p.isMe && "is-me",
           isTarget && !spinning && "is-target",
+          state.shownNames.has(key) && "named",
           !isNew && "seen",
         ].filter(Boolean).join(" ");
         return `
-          <div class="${classes}" style="--a:${angleOf(i)}deg" title="${esc(p.name)}"${isTarget ? " data-target" : ""}>
+          <div class="${classes}" style="--a:${angleOf(i)}deg" title="${esc(p.name)}" data-action="name" data-key="${esc(key)}"${isTarget ? " data-target" : ""}>
             <div class="dot">${esc(initials(p.name))}<span class="presence ${p.online ? "on" : "off"}" title="${esc(t(p.online ? "online" : "offline"))}" aria-label="${esc(t(p.online ? "online" : "offline"))}"></span></div>
             <span class="label">${esc(p.name)}</span>
           </div>`;
@@ -583,7 +607,10 @@
 
     if (drawnAt !== state.landedFor) {
       state.landedFor = drawnAt;
-      setTimeout(flashLanding, SPIN_MS - elapsed);
+      setTimeout(() => {
+        flashLanding();
+        if (state.room) paintSide(state.room);
+      }, SPIN_MS - elapsed + 40);
     }
   }
 
@@ -599,6 +626,36 @@
       ],
       { duration: 1100, easing: "cubic-bezier(0.2, 0.9, 0.3, 1.2)" }
     );
+  }
+
+  // Splits free text into one chip per item (comma, semicolon or new line).
+  function wishChips(text) {
+    return text
+      .split(/[\n,;]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => `<span class="chip">${esc(item)}</span>`)
+      .join("");
+  }
+
+  function myWishesBlock(room) {
+    const chips = wishChips(room.me?.wishes || "");
+    return `<div class="my-wishes">
+        <span class="mini-label">${esc(t("your_wishes"))}</span>
+        <div class="chips">${chips || `<span class="side-sub">${esc(t("no_wishes"))}</span>`}</div>
+      </div>`;
+  }
+
+  // Only the giver gets this panel, and only once the ring has stopped.
+  function giftPanel(room, spinning) {
+    if (!room.target || spinning) return "";
+    const chips = wishChips(room.targetWishes || "");
+    return `<div class="gift-panel">
+        <span class="mini-label">${esc(t("gift_title", { name: room.target }))}</span>
+        ${chips
+          ? `<div class="chips">${chips}</div>`
+          : `<p class="default-wish">${esc(t("wishes_default"))}</p>`}
+      </div>`;
   }
 
   function peopleStrip(room) {
@@ -618,6 +675,7 @@
     const side = $("#side");
     if (!side) return;
 
+    const spinning = !!room.drawnAt && serverNow() - room.drawnAt < SPIN_MS;
     const sig = JSON.stringify([
       state.lang,
       room.status,
@@ -625,6 +683,9 @@
       room.target,
       room.min,
       state.busy,
+      room.targetWishes,
+      room.me?.wishes,
+      spinning,
       room.participants.map((p) => [p.name, p.isHost, p.isMe, p.online]),
     ]);
     if (sig === state.sideSig) return;
@@ -643,6 +704,7 @@
           <p class="section-title">${esc(t("lobby_title"))}</p>
           <h2 class="side-title">${esc(ready ? t("ready") : t("need_more", { n: min - n }))}</h2>
           <p class="side-sub">${esc(ready ? t("ready_sub") : t("min_note", { min }))}</p>
+          ${myWishesBlock(room)}
         </div>
         <div class="progress" aria-hidden="true"><span style="width:${pct}%"></span></div>
         ${isHost
@@ -660,6 +722,7 @@
       <div>
         <p class="section-title">${esc(t("drawn_label"))}</p>
       </div>
+      ${giftPanel(room, spinning)}
       <div>
         <p class="section-title people-title">${esc(t("people"))}<span class="legend"><i class="presence-chip on"></i>${esc(t("online"))} <i class="presence-chip off"></i>${esc(t("offline"))}</span></p>
         ${peopleStrip(room)}
@@ -788,6 +851,13 @@
         const pw = $("#pw");
         if (pw) pw.type = state.showPw ? "text" : "password";
         el.setAttribute("aria-label", t(state.showPw ? "hide_pw" : "show_pw"));
+        break;
+      }
+      case "name": {
+        const key = el.dataset.key;
+        if (state.shownNames.has(key)) state.shownNames.delete(key);
+        else state.shownNames.add(key);
+        if (state.room) paintStage(state.room);
         break;
       }
       case "draw":

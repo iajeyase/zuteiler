@@ -9,6 +9,7 @@
 const MIN_PASSWORD = 4;     // at least 4 characters
 const MAX_PASSWORD = 100;
 const MAX_NAME = 20;
+const MAX_WISHES = 500;
 const MIN_PLAYERS = 3;      // a draw needs at least this many people
 const MAX_PLAYERS = 40;
 const PBKDF2_ITERATIONS = 100000; // Workers' maximum for PBKDF2
@@ -108,6 +109,12 @@ function validPassword(value) {
   return typeof value === "string" && value.length >= MIN_PASSWORD && value.length <= MAX_PASSWORD;
 }
 
+// Optional wish list, free text (words or sentences). Stored as plain text, escaped on display.
+function cleanWishes(value) {
+  if (typeof value !== "string") return "";
+  return value.replace(/\r/g, "").trim().slice(0, MAX_WISHES);
+}
+
 async function authenticate(request, env, code) {
   const header = request.headers.get("authorization") || "";
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
@@ -155,9 +162,9 @@ async function createRoom(request, env) {
     env.DB.prepare("INSERT INTO rooms (code, status, created_at) VALUES (?, 'open', ?)").bind(code, now),
     env.DB.prepare(
       `INSERT INTO participants
-         (room_code, name, name_key, pass_salt, pass_hash, token_hash, is_host, joined_at)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?)`
-    ).bind(code, name, name.toLowerCase(), salt, passHash, await sha256Hex(token), now),
+         (room_code, name, name_key, pass_salt, pass_hash, token_hash, is_host, joined_at, wishes)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    ).bind(code, name, name.toLowerCase(), salt, passHash, await sha256Hex(token), now, cleanWishes(body.wishes)),
   ]);
 
   return json({ code, token, name, isHost: true }, 201);
@@ -197,10 +204,15 @@ async function joinRoom(request, env, code) {
     }
 
     const token = randomHex(32);
+    // Logging in again may also add or change the wishes (empty means "keep them").
+    const newWishes = cleanWishes(body.wishes) || null;
     await env.DB.prepare(
-      "UPDATE participants SET token_hash = ?, failed = 0, locked_until = 0, last_seen = ? WHERE id = ?"
+      `UPDATE participants
+          SET token_hash = ?, failed = 0, locked_until = 0, last_seen = ?,
+              wishes = COALESCE(?, wishes)
+        WHERE id = ?`
     )
-      .bind(await sha256Hex(token), now, existing.id)
+      .bind(await sha256Hex(token), now, newWishes, existing.id)
       .run();
     return json({ code, token, name: existing.name, isHost: !!existing.is_host });
   }
@@ -215,10 +227,10 @@ async function joinRoom(request, env, code) {
   try {
     await env.DB.prepare(
       `INSERT INTO participants
-         (room_code, name, name_key, pass_salt, pass_hash, token_hash, is_host, joined_at, last_seen)
-       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`
+         (room_code, name, name_key, pass_salt, pass_hash, token_hash, is_host, joined_at, last_seen, wishes)
+       VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`
     )
-      .bind(code, name, name.toLowerCase(), salt, passHash, await sha256Hex(token), Date.now(), Date.now())
+      .bind(code, name, name.toLowerCase(), salt, passHash, await sha256Hex(token), Date.now(), Date.now(), cleanWishes(body.wishes))
       .run();
   } catch {
     // Lost a race with someone who took the same name a moment ago.
@@ -256,12 +268,15 @@ async function getRoom(request, env, code) {
     .all();
 
   // The person's own target is the only assignment ever sent back to them.
+  // Wishes of the person you give to: only ever sent to the giver, and only after the draw.
   let target = null;
+  let targetWishes = null;
   if (me.target_id) {
-    const row = await env.DB.prepare("SELECT name FROM participants WHERE id = ?")
+    const row = await env.DB.prepare("SELECT name, wishes FROM participants WHERE id = ?")
       .bind(me.target_id)
       .first();
     target = row?.name ?? null;
+    targetWishes = row?.wishes || null;
   }
 
   return json({
@@ -273,8 +288,9 @@ async function getRoom(request, env, code) {
     drawnAt: room.drawn_at ?? null,
     min: MIN_PLAYERS,
     max: MAX_PLAYERS,
-    me: { name: me.name, isHost: !!me.is_host },
+    me: { name: me.name, isHost: !!me.is_host, wishes: me.wishes || "" },
     target,
+    targetWishes,
     participants: results.map((p) => ({
       name: p.name,
       isHost: !!p.is_host,
